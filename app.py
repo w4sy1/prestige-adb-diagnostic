@@ -2,8 +2,9 @@ import re
 import subprocess
 import sys
 from runtime import entry,parser,run
+from parsers import logcat_summary,permissions_summary
 
-PROPERTIES={'model':'ro.product.model','manufacturer':'ro.product.manufacturer','android':'ro.build.version.release','security_patch':'ro.build.version.security_patch','cpu_abi':'ro.product.cpu.abi'}
+PROPERTIES={'model':'ro.product.model','manufacturer':'ro.product.manufacturer','android':'ro.build.version.release','security_patch':'ro.build.version.security_patch','cpu_abi':'ro.product.cpu.abi','soc_model':'ro.soc.model','soc_manufacturer':'ro.soc.manufacturer','hardware':'ro.hardware'}
 COMMANDS={
  'kernel':['uname','-r'],'ram':['cat','/proc/meminfo'],'storage':['df','-k','/data'],
  'battery':['dumpsys','battery'],'uptime':['cat','/proc/uptime'],
@@ -39,10 +40,13 @@ def build():
     p.add_argument('--device',help='Wybór urządzenia z adb devices')
     p.add_argument('--collect',action='store_true',help='Rozpocznij odczyt podłączonego urządzenia')
     p.add_argument('--logcat-count',action='store_true',help='Policz błędy bufora logcat bez zachowywania treści')
+    p.add_argument('--package-permissions',action='append',default=[],help='Odczytaj status uprawnień wskazanego pakietu; można powtarzać')
     return p
 
 def handle(args):
     if not args.collect:raise ValueError('Wymagane --collect.')
+    for package in args.package_permissions:
+        if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+',package):raise ValueError('Nieprawidłowa nazwa pakietu.')
     device=choose_device(run(['adb','devices']),args.device)
     base=['adb','-s',device,'shell']
     results={}
@@ -54,9 +58,12 @@ def handle(args):
             results[name]={'status':'UNAVAILABLE','error':type(e).__name__}
     if args.logcat_count:
         try:
-            text=run(['adb','-s',device,'logcat','-d','-t','200','-v','brief','*:E'],20)
-            results['logcat']={'status':'OK','error_lines':sum(bool(re.match(r'^E[/\s]',line)) for line in text.splitlines()),'messages_stored':False}
+            text=run(['adb','-s',device,'logcat','-d','-t','200','-v','threadtime','*:E'],20)
+            results['logcat']={'status':'OK','data':logcat_summary(text)}
         except (OSError,RuntimeError,subprocess.SubprocessError):results['logcat']={'status':'UNAVAILABLE'}
+    for package in args.package_permissions:
+        try:results['permissions:'+package]={'status':'OK','data':permissions_summary(run(base+['dumpsys','package',package],30))}
+        except (OSError,RuntimeError,subprocess.SubprocessError):results['permissions:'+package]={'status':'UNAVAILABLE'}
     return {'adb_state':'device','results':results,'ok':not any(v['status']=='UNAVAILABLE' for v in results.values())}
 
 if __name__=='__main__':sys.exit(entry(build,handle))
